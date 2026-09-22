@@ -62,31 +62,36 @@ def load_model(models_dir: Path = MODELS_DIR):
 
     import joblib
 
-    # Find model file (prefer XGBoost .ubj, fall back to .pkl)
-    model_path = models_dir / "best_model.ubj"
-    if model_path.exists():
+    meta_path = models_dir / "eval_report.json"
+    eval_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+
+    target_path = eval_meta.get("model_path")
+    if target_path and Path(target_path).exists():
+        model_path = Path(target_path)
+    elif (models_dir / "best_model.pkl").exists():
+        model_path = models_dir / "best_model.pkl"
+    elif (models_dir / "best_model.ubj").exists():
+        model_path = models_dir / "best_model.ubj"
+    else:
+        raise FileNotFoundError(
+            f"No trained model found in {models_dir}. "
+            "Run: python scripts/train_model.py"
+        )
+
+    if model_path.suffix == ".ubj":
         import xgboost as xgb
         model = xgb.XGBRegressor()
         model.load_model(str(model_path))
     else:
-        model_path = models_dir / "best_model.pkl"
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"No trained model found in {models_dir}. "
-                "Run: python scripts/train_model.py"
-            )
         model = joblib.load(model_path)
 
     preprocessor = joblib.load(models_dir / "preprocessor.pkl")
-
-    meta_path = models_dir / "eval_report.json"
-    eval_meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
 
     _model_cache        = model
     _preprocessor_cache = preprocessor
     _eval_meta_cache    = eval_meta
 
-    log.info("Loaded model: %s", model_path.name)
+    log.info("Loaded model: %s (%s)", model_path.name, eval_meta.get("best_model", "Custom"))
     return model, preprocessor, eval_meta
 
 
@@ -211,17 +216,28 @@ def collect_features_for_query(
         nearby = nearby.sort_values("distance_km")
 
         if len(nearby) > 0:
-            # Get recent depth readings (last 2 years)
-            cutoff_year = obs_year - 2
-            recent_obs = obs[
-                (obs["well_name"].isin(nearby["well_name"])) &
-                (obs["obs_date"].dt.year >= cutoff_year)
-            ] if not obs.empty else pd.DataFrame()
+            # Look for recent observations or fallback to latest available readings per well
+            nearby_names = set(nearby["well_name"])
+            matched_obs = obs[obs["well_name"].isin(nearby_names)].copy() if not obs.empty else pd.DataFrame()
+            
+            if not matched_obs.empty:
+                max_avail_year = matched_obs["obs_date"].dt.year.max()
+                cutoff_year = min(obs_year - 2, max_avail_year - 2)
+                recent_obs = matched_obs[matched_obs["obs_date"].dt.year >= cutoff_year]
+                if recent_obs.empty:
+                    recent_obs = matched_obs.sort_values("obs_date").groupby("well_name").tail(5)
+            else:
+                recent_obs = pd.DataFrame()
 
             # Per-nearby-well info for the response
             for _, w in nearby.head(10).iterrows():
                 w_recent = recent_obs[recent_obs["well_name"] == w["well_name"]] if not recent_obs.empty else pd.DataFrame()
-                recent_depth = float(w_recent["depth_m"].mean()) if len(w_recent) > 0 else None
+                if w_recent.empty and not matched_obs.empty:
+                    w_recent = matched_obs[matched_obs["well_name"] == w["well_name"]].sort_values("obs_date").tail(3)
+                
+                recent_depth = float(w_recent["depth_m"].mean()) if len(w_recent) > 0 else (
+                    float(w["mean_depth_m"]) if "mean_depth_m" in w and pd.notna(w["mean_depth_m"]) else None
+                )
                 nearby_wells_info.append({
                     "well_name":    w["well_name"],
                     "distance_km":  round(float(w["distance_km"]), 2),
@@ -232,13 +248,24 @@ def collect_features_for_query(
 
             # Aggregate features
             all_recent_depths = recent_obs["depth_m"].dropna().tolist() if not recent_obs.empty else []
+            if not all_recent_depths and not matched_obs.empty:
+                all_recent_depths = matched_obs["depth_m"].dropna().tolist()
+
+            avg_d = round(float(np.mean(all_recent_depths)), 3) if all_recent_depths else None
+            min_d = round(float(np.min(all_recent_depths)), 3) if all_recent_depths else None
+            max_d = round(float(np.max(all_recent_depths)), 3) if all_recent_depths else None
+            std_d = round(float(np.std(all_recent_depths)), 3) if all_recent_depths else None
 
             features["n_nearby_wells"]     = len(nearby)
             features["nearest_well_km"]    = round(float(nearby["distance_km"].min()), 3)
-            features["avg_nearby_depth_m"] = round(float(np.mean(all_recent_depths)), 3) if all_recent_depths else None
-            features["min_nearby_depth_m"] = round(float(np.min(all_recent_depths)), 3) if all_recent_depths else None
-            features["max_nearby_depth_m"] = round(float(np.max(all_recent_depths)), 3) if all_recent_depths else None
-            features["std_nearby_depth_m"] = round(float(np.std(all_recent_depths)), 3) if all_recent_depths else None
+            features["avg_nearby_depth_m"] = avg_d
+            features["min_nearby_depth_m"] = min_d
+            features["max_nearby_depth_m"] = max_d
+            features["std_nearby_depth_m"] = std_d
+            features["mean_depth_m"]       = avg_d
+            features["min_depth_m"]        = min_d
+            features["max_depth_m"]        = max_d
+            features["std_depth_m"]        = std_d
 
             # Trend from nearby wells
             if len(all_recent_depths) >= 3 and not recent_obs.empty:
@@ -254,6 +281,7 @@ def collect_features_for_query(
                 "n_nearby_wells": 0, "nearest_well_km": None,
                 "avg_nearby_depth_m": None, "min_nearby_depth_m": None,
                 "max_nearby_depth_m": None, "std_nearby_depth_m": None,
+                "mean_depth_m": None, "min_depth_m": None, "max_depth_m": None, "std_depth_m": None,
                 "trend_slope_m_yr": 0.0,
             })
             trend_label = "Stable"
@@ -262,6 +290,7 @@ def collect_features_for_query(
             "n_nearby_wells": 0, "nearest_well_km": None,
             "avg_nearby_depth_m": None, "min_nearby_depth_m": None,
             "max_nearby_depth_m": None, "std_nearby_depth_m": None,
+            "mean_depth_m": None, "min_depth_m": None, "max_depth_m": None, "std_depth_m": None,
             "trend_slope_m_yr": 0.0,
         })
         trend_label = "Stable"
@@ -299,19 +328,27 @@ def predict(
     # Preprocess
     X = preprocessor.transform(feature_df)
 
-    # Predict
-    predicted_depth = float(model.predict(X)[0])
-    predicted_depth = max(0.0, round(predicted_depth, 2))
-
-    # Classify
-    condition   = classify_groundwater_condition(predicted_depth)
-
     # Confidence
     n_wells     = features.get("n_nearby_wells", 0) or 0
     nearest_km  = features.get("nearest_well_km") or radius_km
     confidence, confidence_explanation = compute_confidence_score(
         n_wells, nearest_km, max_radius_km=radius_km
     )
+
+    # Predict (only for points within calibrated regional range)
+    if confidence > 0 and n_wells > 0:
+        predicted_depth = float(model.predict(X)[0])
+        predicted_depth = max(0.0, round(predicted_depth, 2))
+    else:
+        predicted_depth = None
+
+    # Classify condition based on depth and confidence
+    condition   = classify_groundwater_condition(
+        predicted_depth, confidence_pct=confidence, n_wells=n_wells
+    )
+
+    if confidence <= 0:
+        trend_label = "Unmonitored"
 
     return {
         "latitude":           lat,

@@ -100,11 +100,11 @@ export default function App() {
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-    // High quality OpenStreetMap tiles with custom CSS dark tone
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 19,
-      className: 'custom-osm-tiles',
+    // Clean, vibrant Google Maps style tiles
+    L.tileLayer('https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+      subdomains: ['0', '1', '2', '3'],
+      attribution: '&copy; Google Maps',
+      maxZoom: 20,
     }).addTo(map);
 
     // Custom pulsing pin icon
@@ -229,6 +229,7 @@ export default function App() {
 
   const getStatusColor = (status: string = '') => {
     const s = status.toLowerCase();
+    if (s.includes('uncertain') || s.includes('no data') || s.includes('unmonitored') || s.includes('unknown')) return '#94a3b8'; // Slate/Muted
     if (s.includes('excellent')) return '#10b981'; // Green (0 - 10m)
     if (s.includes('good')) return '#06b6d4';      // Cyan (10 - 20m)
     if (s.includes('moderate')) return '#f59e0b';  // Amber (20 - 30m)
@@ -237,6 +238,7 @@ export default function App() {
 
   const getStatusClass = (status: string = '') => {
     const s = status.toLowerCase();
+    if (s.includes('uncertain') || s.includes('no data') || s.includes('unmonitored') || s.includes('unknown')) return 'uncertain';
     if (s.includes('excellent')) return 'excellent';
     if (s.includes('good')) return 'good';
     if (s.includes('moderate')) return 'moderate';
@@ -371,10 +373,10 @@ export default function App() {
               </span>
             </div>
             <div style={{ fontSize: '1.05rem', fontWeight: 600, color: '#ffffff', marginTop: '4px' }}>
-              {prediction?.location?.displayName || `Coordinate (${coords.lat.toFixed(5)}°N, ${coords.lon.toFixed(5)}°E)`}
+              {prediction?.location?.displayName || `GPS (${coords.lat.toFixed(4)}°N, ${coords.lon.toFixed(4)}°E)`}
             </div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-              District: <strong style={{ color: '#38bdf8' }}>{prediction?.location?.district || 'Telangana'}</strong> • State: {prediction?.location?.state || 'Telangana, India'}
+              District: <strong style={{ color: '#38bdf8' }}>{prediction?.location?.district || 'Unassigned / Ocean'}</strong> • State: {prediction?.location?.state || (prediction?.confidence && prediction.confidence > 0 ? 'Telangana, India' : 'Offshore / Unmonitored Region')}
             </div>
           </div>
 
@@ -411,15 +413,25 @@ export default function App() {
                 </div>
 
                 <div className="depth-display">
-                  <span className="depth-value">{prediction.estimated_depth_m.toFixed(2)}</span>
-                  <span className="depth-unit">meters BGL</span>
+                  <span className="depth-value">
+                    {prediction.estimated_depth_m != null && prediction.confidence > 0
+                      ? prediction.estimated_depth_m.toFixed(2)
+                      : '--'}
+                  </span>
+                  <span className="depth-unit">
+                    {prediction.estimated_depth_m != null && prediction.confidence > 0 ? 'meters BGL' : 'meters'}
+                  </span>
                 </div>
 
                 <div className="depth-subtext">
                   <span>Below Ground Level (BGL)</span> •
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#38bdf8', fontWeight: 600 }}>
-                    {prediction.trend === 'Increasing' ? <TrendingUp size={15} /> : prediction.trend === 'Decreasing' ? <TrendingDown size={15} /> : <Minus size={15} />}
-                    {prediction.trend} Trend
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8', fontWeight: 600 }}>
+                    {prediction.confidence > 0 ? (
+                      prediction.trend === 'Increasing' ? <TrendingUp size={15} /> : prediction.trend === 'Decreasing' ? <TrendingDown size={15} /> : <Minus size={15} />
+                    ) : (
+                      <Minus size={15} />
+                    )}
+                    {prediction.confidence > 0 ? `${prediction.trend} Trend` : 'No Telemetry'}
                   </span>
                 </div>
 
@@ -428,7 +440,9 @@ export default function App() {
                   <div
                     className="meter-fill"
                     style={{
-                      width: `${Math.min(100, Math.max(6, (prediction.estimated_depth_m / 35) * 100))}%`,
+                      width: prediction.estimated_depth_m != null && prediction.confidence > 0
+                        ? `${Math.min(100, Math.max(6, (prediction.estimated_depth_m / 35) * 100))}%`
+                        : '0%',
                       background: getStatusColor(prediction.condition),
                     }}
                   />
@@ -442,14 +456,14 @@ export default function App() {
               </div>
 
               {/* 2. Confidence Score & Diagnostic Card */}
-              <div className="glass-panel" style={{ padding: '18px 22px', borderLeft: '4px solid var(--accent-cyan)' }}>
+              <div className="glass-panel" style={{ padding: '18px 22px', borderLeft: `4px solid ${prediction.confidence > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)'}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#38bdf8' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8' }}>
                     <ShieldCheck size={20} />
                     <span style={{ fontSize: '0.9rem', fontWeight: 700 }}>ML Confidence Score</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '1.25rem', fontWeight: 800, color: '#38bdf8', fontFamily: 'Outfit, sans-serif' }}>
+                    <span style={{ fontSize: '1.25rem', fontWeight: 800, color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8', fontFamily: 'Outfit, sans-serif' }}>
                       {prediction.confidence}%
                     </span>
                   </div>
@@ -461,7 +475,7 @@ export default function App() {
                     style={{
                       width: `${prediction.confidence}%`,
                       height: '100%',
-                      background: 'linear-gradient(90deg, #06b6d4, #10b981)',
+                      background: prediction.confidence > 0 ? 'linear-gradient(90deg, #06b6d4, #10b981)' : '#475569',
                       borderRadius: '9999px',
                     }}
                   />
@@ -484,10 +498,12 @@ export default function App() {
                     <CloudRain size={14} color="#38bdf8" /> Weather (NASA)
                   </div>
                   <div className="feature-box-value">
-                    {prediction.weather?.rainfall_mm != null ? `${prediction.weather.rainfall_mm} mm` : '62.4 mm'}
+                    {prediction.weather?.rainfall_mm != null ? `${prediction.weather.rainfall_mm} mm` : 'N/A'}
                   </div>
                   <div className="feature-box-desc">
-                    {prediction.weather?.temp_c != null ? `${prediction.weather.temp_c}°C` : '30.5°C'} • {prediction.weather?.humidity_pct || 64}% Humidity
+                    {prediction.weather?.temp_c != null
+                      ? `${prediction.weather.temp_c}°C • ${prediction.weather.humidity_pct ?? '--'}% Humidity`
+                      : 'No Station Data'}
                   </div>
                 </div>
 
@@ -497,10 +513,10 @@ export default function App() {
                     <Mountain size={14} color="#f59e0b" /> Topography & LULC
                   </div>
                   <div className="feature-box-value">
-                    {prediction.elevation_m != null ? `${prediction.elevation_m} m` : '505 m'} MSL
+                    {prediction.elevation_m != null ? `${prediction.elevation_m} m MSL` : 'N/A (Offshore)'}
                   </div>
                   <div className="feature-box-desc">
-                    {prediction.lulc_label || 'Built_Up / Urban'}
+                    {prediction.lulc_label || (prediction.elevation_m == null || prediction.elevation_m <= 0 ? 'Water Body / Offshore' : 'Unmapped')}
                   </div>
                 </div>
 
@@ -510,10 +526,10 @@ export default function App() {
                     <SoilIcon size={14} color="#10b981" /> Soil Matrix
                   </div>
                   <div className="feature-box-value">
-                    {prediction.soil?.clay_pct != null ? `${prediction.soil.clay_pct}% Clay` : '28% Clay'}
+                    {prediction.soil?.clay_pct != null ? `${prediction.soil.clay_pct}% Clay` : 'N/A'}
                   </div>
                   <div className="feature-box-desc">
-                    pH {prediction.soil?.soil_ph || '6.8'} • {prediction.soil?.sand_pct || 46}% Sand
+                    {prediction.soil?.soil_ph != null ? `pH ${prediction.soil.soil_ph} • ${prediction.soil.sand_pct ?? '--'}% Sand` : 'Unmapped / Offshore'}
                   </div>
                 </div>
 
@@ -523,10 +539,10 @@ export default function App() {
                     <Activity size={14} color="#a855f7" /> ML Model Engine
                   </div>
                   <div className="feature-box-value">
-                    {prediction.model_info?.model_type || 'XGBoost'}
+                    {prediction.model_info?.model_type || 'LightGBM'}
                   </div>
                   <div className="feature-box-desc">
-                    Test MAE: 3.04m • R²: 0.51
+                    {prediction.confidence > 0 ? 'Test MAE: 3.98m • R²: 0.52' : 'Out of Calibrated Range'}
                   </div>
                 </div>
               </div>

@@ -80,6 +80,10 @@ NUMERIC_FEATURES = [
     "min_nearby_depth_m",
     "max_nearby_depth_m",
     "std_nearby_depth_m",
+    "mean_depth_m",
+    "std_depth_m",
+    "min_depth_m",
+    "max_depth_m",
     "trend_slope_m_yr",
     # Soil (null for Hyderabad urban — imputed with median)
     "clay_pct",

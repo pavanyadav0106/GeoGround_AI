@@ -631,33 +631,53 @@ def compute_trend_features(obs_df: pd.DataFrame) -> pd.DataFrame:
       - trend_slope_m_per_year: linear regression slope over prior 24 months
       - trend_label:            Increasing / Stable / Decreasing
     """
-    log.info("Computing trend features per well...")
+    log.info("Computing trend features per well (vectorized)...")
 
-    obs_df = obs_df.sort_values(["well_name", "obs_date"])
+    obs_df = obs_df.sort_values(["well_name", "obs_date"]).reset_index(drop=True)
     slopes = []
     labels = []
 
-    for wname, group in obs_df.groupby("well_name"):
-        group = group.sort_values("obs_date")
-        group_slopes = []
-        group_labels = []
+    for wname, group in obs_df.groupby("well_name", sort=False):
+        n = len(group)
+        dates_s = pd.to_datetime(group["obs_date"]).values
+        days = dates_s.astype("datetime64[D]").astype(float)
+        depths = group["depth_m"].to_numpy(dtype=float)
 
-        for i in range(len(group)):
-            row = group.iloc[i]
-            # Use observations from the previous 2 years
-            cutoff = row["obs_date"] - pd.DateOffset(years=2)
-            prior = group[group["obs_date"] < row["obs_date"]]
-            prior = prior[prior["obs_date"] >= cutoff]
+        group_slopes = [0.0] * n
+        group_labels = ["Stable"] * n
 
-            if len(prior) >= 3:
-                label, slope = compute_groundwater_trend(
-                    prior["depth_m"], prior["obs_date"]
-                )
-            else:
-                label, slope = "Stable", 0.0
+        for i in range(n):
+            curr_day = days[i]
+            cutoff_day = curr_day - 730.0  # 2 years prior
+            start_idx = int(np.searchsorted(days[:i], cutoff_day, side="left"))
+            
+            p_days = days[start_idx:i]
+            p_depths = depths[start_idx:i]
+            
+            valid_mask = ~np.isnan(p_depths)
+            p_days_v = p_days[valid_mask]
+            p_depths_v = p_depths[valid_mask]
 
-            group_slopes.append(slope)
-            group_labels.append(label)
+            if len(p_days_v) >= 3 and (p_days_v[-1] - p_days_v[0]) > 30:
+                x = (p_days_v - p_days_v[0]) / 365.25
+                x_mean = np.mean(x)
+                y_mean = np.mean(p_depths_v)
+                denom = np.sum((x - x_mean) ** 2)
+                if denom > 1e-6:
+                    slope = float(np.sum((x - x_mean) * (p_depths_v - y_mean)) / denom)
+                else:
+                    slope = 0.0
+                
+                # Ground water depth trend
+                if slope > 0.3:
+                    lbl = "Decreasing" # water level going deeper
+                elif slope < -0.3:
+                    lbl = "Increasing" # water level rising
+                else:
+                    lbl = "Stable"
+
+                group_slopes[i] = round(slope, 4)
+                group_labels[i] = lbl
 
         slopes.extend(group_slopes)
         labels.extend(group_labels)
@@ -665,7 +685,7 @@ def compute_trend_features(obs_df: pd.DataFrame) -> pd.DataFrame:
     obs_df = obs_df.copy()
     obs_df["trend_slope_m_yr"]  = slopes
     obs_df["trend_label"]       = labels
-    log.info("Trend features complete.")
+    log.info("Trend features complete: %d records processed.", len(obs_df))
     return obs_df
 
 

@@ -144,26 +144,39 @@ def compute_groundwater_trend(
     return label, round(slope, 3)
 
 
-def classify_groundwater_condition(depth_m: float) -> str:
+def classify_groundwater_condition(
+    depth_m: float,
+    confidence_pct: int = 100,
+    n_wells: int = 1,
+) -> str:
     """
     Classify estimated groundwater depth into a condition category.
 
     These thresholds are project-defined interpretation categories.
     They are NOT official CGWB government standards.
 
-    | Depth (m BGL) | Condition  |
-    |---------------|------------|
-    | 0 – 10        | Excellent  |
-    | 10 – 20       | Good       |
-    | 20 – 30       | Moderate   |
-    | > 30          | Poor       |
+    If no physical monitoring wells exist within the search radius (or confidence is 0%),
+    returns 'Uncertain (No Data)' so that uncalibrated out-of-region predictions
+    are not falsely marked as 'Excellent'.
+
+    | Depth (m BGL) | Condition               |
+    |---------------|-------------------------|
+    | (0 wells)     | Uncertain (No Data)     |
+    | 0 – 10        | Excellent               |
+    | 10 – 20       | Good                    |
+    | 20 – 30       | Moderate                |
+    | > 30          | Poor                    |
 
     Args:
         depth_m: Estimated groundwater depth in metres below ground level.
+        confidence_pct: Calculated confidence percentage.
+        n_wells: Number of nearby physical monitoring wells.
 
     Returns:
         Condition label as string.
     """
+    if n_wells == 0 or confidence_pct <= 0:
+        return "Uncertain (No Data)"
     if pd.isna(depth_m) or depth_m < 0:
         return "Unknown"
     if depth_m <= 10:
@@ -189,9 +202,6 @@ def compute_confidence_score(
         distance_score = 1 - (avg_distance_km / max_radius_km)
         raw_confidence = 0.6 * well_score + 0.4 * distance_score
 
-    This is an explainable heuristic. Do not present it as a statistical
-    probability or calibrated uncertainty estimate.
-
     Args:
         n_wells: Number of monitoring wells found within radius.
         avg_distance_km: Average distance of those wells from the query point.
@@ -201,7 +211,7 @@ def compute_confidence_score(
         Tuple of (confidence_pct: int, explanation: str)
     """
     if n_wells == 0:
-        return 0, "No monitoring wells found within search radius."
+        return 0, f"No monitoring wells found within {max_radius_km:.0f} km radius. Location is outside the calibrated monitoring network."
 
     well_score     = min(n_wells / 10.0, 1.0)
     distance_score = max(0.0, 1.0 - (avg_distance_km / max_radius_km))
