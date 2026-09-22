@@ -1,0 +1,65 @@
+{
+  "best_model": "LightGBM",
+  "model_path": "E:\\GeoGround_AI\\ml\\models\\best_model.pkl",
+  "preprocessor": "E:\\GeoGround_AI\\ml\\models\\preprocessor.pkl",
+  "features": [
+    "latitude",
+    "longitude",
+    "obs_year",
+    "obs_month",
+    "elevation_m",
+    "rainfall_mm",
+    "temp_c",
+    "humidity_pct",
+    "mean_depth_m",
+    "std_depth_m",
+    "min_depth_m",
+    "max_depth_m",
+    "trend_slope_m_yr",
+    "clay_pct",
+    "sand_pct",
+    "silt_pct",
+    "soil_ph",
+    "obs_season",
+    "lulc_label",
+    "lulc_is_built_up",
+    "lulc_is_cropland",
+    "lulc_is_water"
+  ],
+  "target": "depth_m",
+  "split_year": 2017,
+  "train_rows": 48272,
+  "test_rows": 33921,
+  "results": [
+    {
+      "model": "Baseline (mean)",
+      "mae": 6.182,
+      "rmse": 8.0271,
+      "r2": -0.004
+    },
+    {
+      "model": "Random Forest",
+      "mae": 2.5368,
+      "rmse": 3.8729,
+      "r2": 0.7663
+    },
+    {
+      "model": "XGBoost",
+      "mae": 2.4726,
+      "rmse": 3.7153,
+      "r2": 0.7849
+    },
+    {
+      "model": "LightGBM",
+      "mae": 2.4656,
+      "rmse": 3.683,
+      "r2": 0.7886
+    }
+  ],
+  "best_result": {
+    "model": "LightGBM",
+    "mae": 2.4656,
+    "rmse": 3.683,
+    "r2": 0.7886
+  }
+}

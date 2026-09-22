@@ -1,0 +1,79 @@
+# GeoGround AI — .gitignore
+
+# ─── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# ─── Environment & Secrets ──────────────────────────────────────────────────
+.env
+*.env.local
+*.env.production
+
+# ─── Data files ─────────────────────────────────────────────────────────────
+ml/data/raw/
+ml/data/external/
+ml/data/processed/training_data_*.csv
+*.parquet
+*.h5
+*.nc
+
+# Runtime well lookup data (essential for inference)
+!ml/data/processed/wells_telangana.csv
+!ml/data/processed/wells_hyderabad.csv
+!ml/data/processed/observations_telangana.csv
+!ml/data/processed/observations_hyderabad.csv
+
+# ─── Trained models ─────────────────────────────────────────────────────────
+# Keep model artifacts needed for cloud deployment
+!ml/models/best_model.pkl
+!ml/models/preprocessor.pkl
+!ml/models/eval_report.json
+!ml/models/feature_importance.csv
+
+# ─── Jupyter ────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ─── Node.js ────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.next/
+.cache/
+
+# ─── IDE ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Office & Temporary ───────────────────────────────────────────────────
+~$*
+*.tmp
+*.temp
+
+# ─── Logs ───────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Docker ─────────────────────────────────────────────────────────────────
+.docker/
+
+# ─── Keep these directories (add .gitkeep) ──────────────────────────────────
+!ml/data/raw/.gitkeep
+!ml/data/processed/.gitkeep
+!ml/data/external/.gitkeep
+!ml/models/.gitkeep
