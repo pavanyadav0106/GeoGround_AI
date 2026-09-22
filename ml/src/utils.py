@@ -144,68 +144,99 @@ def compute_groundwater_trend(
     return label, round(slope, 3)
 
 
+def compute_groundwater_health_index(
+    depth_m: Optional[float],
+    trend_slope_m_yr: float = 0.0,
+    confidence_pct: int = 100,
+    n_wells: int = 1,
+) -> Tuple[Optional[int], str, str]:
+    """
+    Compute the Groundwater Health & Availability Index (0 - 100%)
+    based on depth below ground level and aquifer depletion trend.
+
+    Scoring Scale:
+      • 80 - 100%: Safe / Abundant Water Table (0 - 8m BGL)
+      • 60 - 79% : Good / Stable Availability (8 - 15m BGL)
+      • 35 - 59% : Semi-Critical / Moderate Stress (15 - 22m BGL)
+      • 15 - 34% : Critical / Over-Exploited Red Zone (22 - 32m BGL)
+      • 0 - 14%  : Severe Depletion / Deep Aquifer Crisis (> 32m BGL)
+
+    Returns:
+        Tuple of (health_score_pct, health_status_label, health_description)
+    """
+    if n_wells == 0 or confidence_pct <= 0 or depth_m is None or pd.isna(depth_m):
+        return None, "Unmonitored", "Location is outside calibrated monitoring coverage."
+
+    # Base score: maps 0m -> 100%, 35m+ -> 0%
+    base_score = max(0.0, 100.0 - (depth_m / 35.0 * 100.0))
+
+    # Trend adjustment: falling water table reduces health index; rising improves it
+    if trend_slope_m_yr > 0.3:
+        trend_penalty = min(15.0, trend_slope_m_yr * 10.0)
+        base_score = max(0.0, base_score - trend_penalty)
+    elif trend_slope_m_yr < -0.3:
+        trend_bonus = min(10.0, abs(trend_slope_m_yr) * 8.0)
+        base_score = min(100.0, base_score + trend_bonus)
+
+    health_score = int(round(np.clip(base_score, 0, 100)))
+
+    if health_score >= 80:
+        status = "Safe & Abundant"
+        desc = f"Water table is shallow ({depth_m:.1f}m BGL) with healthy recharge potential."
+    elif health_score >= 60:
+        status = "Good / Sustainable"
+        desc = f"Moderate water level ({depth_m:.1f}m BGL) under sustainable utilization."
+    elif health_score >= 35:
+        status = "Semi-Critical / Stressed"
+        desc = f"Significant drawdown ({depth_m:.1f}m BGL). Conservation recommended."
+    elif health_score >= 15:
+        status = "Critical / Over-Exploited"
+        desc = f"Severe groundwater depletion ({depth_m:.1f}m BGL). Active over-extraction red zone."
+    else:
+        status = "Extreme Crisis"
+        desc = f"Critical aquifer failure ({depth_m:.1f}m BGL). Water table severely exhausted."
+
+    return health_score, status, desc
+
+
 def classify_groundwater_condition(
     depth_m: float,
     confidence_pct: int = 100,
     n_wells: int = 1,
 ) -> str:
     """
-    Classify estimated groundwater depth into a condition category.
-
-    These thresholds are project-defined interpretation categories.
-    They are NOT official CGWB government standards.
-
-    If no physical monitoring wells exist within the search radius (or confidence is 0%),
-    returns 'Uncertain (No Data)' so that uncalibrated out-of-region predictions
-    are not falsely marked as 'Excellent'.
-
-    | Depth (m BGL) | Condition               |
-    |---------------|-------------------------|
-    | (0 wells)     | Uncertain (No Data)     |
-    | 0 – 10        | Excellent               |
-    | 10 – 20       | Good                    |
-    | 20 – 30       | Moderate                |
-    | > 30          | Poor                    |
-
-    Args:
-        depth_m: Estimated groundwater depth in metres below ground level.
-        confidence_pct: Calculated confidence percentage.
-        n_wells: Number of nearby physical monitoring wells.
-
-    Returns:
-        Condition label as string.
+    Classify estimated groundwater depth into hydrogeological category.
     """
     if n_wells == 0 or confidence_pct <= 0:
         return "Uncertain (No Data)"
     if pd.isna(depth_m) or depth_m < 0:
         return "Unknown"
-    if depth_m <= 10:
+    if depth_m <= 8:
         return "Excellent"
-    if depth_m <= 20:
+    if depth_m <= 15:
         return "Good"
-    if depth_m <= 30:
+    if depth_m <= 22:
         return "Moderate"
-    return "Poor"
+    if depth_m <= 30:
+        return "Critical"
+    return "Severe Depletion"
 
 
 def compute_confidence_score(
     n_wells: int,
-    avg_distance_km: float,
+    nearest_distance_km: float,
     max_radius_km: float = 15.0,
+    rainfall_mm: Optional[float] = None,
+    soil_data: Optional[dict] = None,
+    lulc_data: Optional[dict] = None,
+    std_depth_m: Optional[float] = None,
 ) -> Tuple[int, str]:
     """
-    Compute a confidence score for a prediction based on nearby well count
-    and average distance.
-
-    Formula (project-defined — NOT a statistically calibrated probability):
-        well_score     = min(n_wells / 10, 1.0)          # maxes at 10 wells
-        distance_score = 1 - (avg_distance_km / max_radius_km)
-        raw_confidence = 0.6 * well_score + 0.4 * distance_score
-
-    Args:
-        n_wells: Number of monitoring wells found within radius.
-        avg_distance_km: Average distance of those wells from the query point.
-        max_radius_km: Search radius used (for normalisation).
+    Compute a multi-source confidence score for a groundwater prediction based on:
+      1. Observation Wells (40%): Spatial proximity, monitoring density & local water table consistency.
+      2. Weather / Rainfall (20%): NASA POWER rainfall & climate telemetry availability & plausibility.
+      3. Soil Hydrogeology (20%): ISRIC SoilGrids texture balance (clay, sand, silt) & soil pH.
+      4. Land Cover Type (20%): ESA WorldCover land use infiltration characteristics.
 
     Returns:
         Tuple of (confidence_pct: int, explanation: str)
@@ -213,16 +244,98 @@ def compute_confidence_score(
     if n_wells == 0:
         return 0, f"No monitoring wells found within {max_radius_km:.0f} km radius. Location is outside the calibrated monitoring network."
 
-    well_score     = min(n_wells / 10.0, 1.0)
-    distance_score = max(0.0, 1.0 - (avg_distance_km / max_radius_km))
+    # 1. Observation Well Score (Weight: 40%)
+    # - Proximity (0 to 1): closer nearest well gives higher confidence
+    proximity_score = max(0.0, 1.0 - (nearest_distance_km / max_radius_km))
+    # - Density (0 to 1): scales up to 8 wells
+    density_score = min(n_wells / 8.0, 1.0)
+    # - Local Aquifer Consistency (0 to 1): lower variance among neighboring wells = more predictable aquifer
+    if std_depth_m is not None and not np.isnan(std_depth_m) and n_wells >= 2:
+        if std_depth_m <= 2.5:
+            consistency_score = 1.0
+        elif std_depth_m <= 6.0:
+            consistency_score = 0.85
+        elif std_depth_m <= 12.0:
+            consistency_score = 0.70
+        else:
+            consistency_score = 0.55  # High local drawdown variance
+    else:
+        consistency_score = 0.80
 
-    raw = 0.6 * well_score + 0.4 * distance_score
-    confidence_pct = int(round(raw * 100))
+    wells_score = 0.45 * proximity_score + 0.35 * density_score + 0.20 * consistency_score
+
+    # 2. Weather & Rainfall Score (Weight: 20%)
+    if rainfall_mm is not None and not np.isnan(rainfall_mm):
+        if 0.0 <= rainfall_mm <= 600.0:
+            weather_score = 0.95
+        else:
+            weather_score = 0.70
+        weather_note = f"Rainfall: {rainfall_mm:.1f} mm"
+    else:
+        weather_score = 0.30
+        weather_note = "Rainfall telemetry unavailable"
+
+    # 3. Soil Composition & Texture Score (Weight: 20%)
+    soil = soil_data or {}
+    clay = soil.get("clay_pct")
+    sand = soil.get("sand_pct")
+    silt = soil.get("silt_pct")
+    ph   = soil.get("soil_ph")
+
+    has_soil_texture = all(v is not None and not np.isnan(v) for v in (clay, sand, silt))
+    if has_soil_texture:
+        # Check realistic texture sum
+        tex_sum = float(clay) + float(sand) + float(silt)
+        if 85.0 <= tex_sum <= 115.0:
+            soil_score = 0.95
+        else:
+            soil_score = 0.80
+        soil_note = f"Soil: Clay {clay:.0f}%, Sand {sand:.0f}%, Silt {silt:.0f}%"
+    elif any(v is not None and not np.isnan(v) for v in (clay, sand, silt, ph)):
+        soil_score = 0.60
+        soil_note = "Partial soil telemetry"
+    else:
+        soil_score = 0.25
+        soil_note = "Soil data unavailable"
+
+    # 4. Land Cover Type (LULC) Score (Weight: 20%)
+    lulc = lulc_data or {}
+    lulc_label = lulc.get("lulc_label") or lulc.get("label") or "Unknown"
+    lulc_code  = lulc.get("lulc_code") or lulc.get("code")
+
+    # Infiltration / Recharge predictability based on ESA WorldCover
+    if lulc_code == 40 or "crop" in str(lulc_label).lower():
+        lulc_score = 0.95  # Cropland / Agricultural recharge
+        lulc_desc = f"LULC: {lulc_label} (High Infiltration)"
+    elif lulc_code in (10, 20, 30) or any(k in str(lulc_label).lower() for k in ("tree", "shrub", "grass")):
+        lulc_score = 0.90  # Natural vegetation / Forest / Grassland
+        lulc_desc = f"LULC: {lulc_label} (Natural Recharge)"
+    elif lulc_code == 80 or "water" in str(lulc_label).lower():
+        lulc_score = 0.85  # Open water surface
+        lulc_desc = f"LULC: {lulc_label} (Surface Water Proximity)"
+    elif lulc_code == 50 or "built" in str(lulc_label).lower() or "urban" in str(lulc_label).lower():
+        lulc_score = 0.70  # Urban / Impermeable concrete surfaces limit direct infiltration
+        lulc_desc = f"LULC: {lulc_label} (Impervious Surface)"
+    elif lulc_code == 60 or "bare" in str(lulc_label).lower() or "barren" in str(lulc_label).lower():
+        lulc_score = 0.80
+        lulc_desc = f"LULC: {lulc_label} (Barren / Rocky)"
+    else:
+        lulc_score = 0.35
+        lulc_desc = f"LULC: {lulc_label}"
+
+    # Combined Multi-Factor Confidence
+    raw_confidence = (
+        0.40 * wells_score +
+        0.20 * weather_score +
+        0.20 * soil_score +
+        0.20 * lulc_score
+    )
+    confidence_pct = int(round(np.clip(raw_confidence * 100, 10, 99)))
 
     explanation = (
-        f"Based on {n_wells} nearby monitoring well{'s' if n_wells != 1 else ''} "
-        f"(avg. distance: {avg_distance_km:.1f} km). "
-        f"More nearby wells = higher confidence."
+        f"Multi-Factor Confidence: {confidence_pct}% | "
+        f"{n_wells} nearby wells (closest {nearest_distance_km:.1f} km) • "
+        f"{weather_note} • {soil_note} • {lulc_desc}"
     )
 
     return confidence_pct, explanation

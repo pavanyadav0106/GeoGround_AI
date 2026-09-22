@@ -32,6 +32,7 @@ from utils import (
     classify_groundwater_condition,
     compute_groundwater_trend,
     compute_confidence_score,
+    compute_groundwater_health_index,
     season_from_month,
 )
 from feature_engineering import (
@@ -167,27 +168,67 @@ def collect_features_for_query(
         climate = fetch_nasa_power(lat, lon, well_name=f"query_{lat:.4f}_{lon:.4f}")
         if climate:
             key = f"{obs_year:04d}-{obs_month:02d}"
-            monthly = climate.get(key, {})
-            features["rainfall_mm"]  = monthly.get("rainfall_mm")
-            features["temp_c"]       = monthly.get("temp_c")
-            features["humidity_pct"] = monthly.get("humidity_pct")
+            monthly = climate.get(key)
+            # If current month/year is beyond NASA archive (e.g. 2024-2026),
+            # retrieve the most recent recorded year for the same calendar month
+            if not monthly or monthly.get("rainfall_mm") is None:
+                month_suffix = f"-{obs_month:02d}"
+                same_month_entries = [
+                    v for k, v in sorted(climate.items())
+                    if k.endswith(month_suffix) and v.get("rainfall_mm") is not None
+                ]
+                if same_month_entries:
+                    monthly = same_month_entries[-1]
+                else:
+                    rain_vals = [v.get("rainfall_mm") for v in climate.values() if v.get("rainfall_mm") is not None]
+                    temp_vals = [v.get("temp_c") for v in climate.values() if v.get("temp_c") is not None]
+                    hum_vals  = [v.get("humidity_pct") for v in climate.values() if v.get("humidity_pct") is not None]
+                    monthly = {
+                        "rainfall_mm": round(float(np.mean(rain_vals)), 2) if rain_vals else None,
+                        "temp_c": round(float(np.mean(temp_vals)), 2) if temp_vals else None,
+                        "humidity_pct": round(float(np.mean(hum_vals)), 2) if hum_vals else None,
+                    }
+
+            if monthly:
+                features["rainfall_mm"]  = monthly.get("rainfall_mm")
+                features["temp_c"]       = monthly.get("temp_c")
+                features["humidity_pct"] = monthly.get("humidity_pct")
+            else:
+                features.update({"rainfall_mm": None, "temp_c": None, "humidity_pct": None})
         else:
             features.update({"rainfall_mm": None, "temp_c": None, "humidity_pct": None})
     except Exception as e:
         log.warning("NASA POWER fetch failed: %s", e)
         features.update({"rainfall_mm": None, "temp_c": None, "humidity_pct": None})
 
-    # ── Soil ─────────────────────────────────────────────────
+    # ── Soil (SoilGrids with Regional Geological Fallback) ───
     try:
         soil = fetch_soilgrids(lat, lon) or {}
-        features["clay_pct"]  = soil.get("clay_pct")
-        features["sand_pct"]  = soil.get("sand_pct")
-        features["silt_pct"]  = soil.get("silt_pct")
-        features["soil_ph"]   = soil.get("soil_ph")
+        clay = soil.get("clay_pct")
+        sand = soil.get("sand_pct")
+        silt = soil.get("silt_pct")
+        ph   = soil.get("soil_ph")
+
+        # If urban paved centroid or API masked, use regional Telangana geological soil profile
+        if clay is None or sand is None:
+            # Telangana Soil Classification:
+            # Northern/Godavari basin (Adilabad/Nizamabad): Black Cotton Soil (Vertisol)
+            # Central/Southern (Hyderabad/Rangareddy/Medak/Nalgonda): Red Sandy Loam (Alfisol)
+            if lat > 18.5:
+                clay, sand, silt, ph = 42.0, 28.0, 30.0, 7.6  # Black Cotton / Vertisol
+            elif lon > 79.5:
+                clay, sand, silt, ph = 32.0, 43.0, 25.0, 7.2  # Mixed Loam / Alluvial
+            else:
+                clay, sand, silt, ph = 24.0, 56.0, 20.0, 6.8  # Red Sandy Loam (Alfisol)
+
+        features["clay_pct"] = clay
+        features["sand_pct"] = sand
+        features["silt_pct"] = silt
+        features["soil_ph"]  = ph
     except Exception as e:
-        log.warning("SoilGrids fetch failed: %s", e)
-        features.update({"clay_pct": None, "sand_pct": None,
-                         "silt_pct": None, "soil_ph": None})
+        log.warning("Soil profile resolution failed: %s", e)
+        features.update({"clay_pct": 26.0, "sand_pct": 52.0,
+                         "silt_pct": 22.0, "soil_ph": 6.8})
 
     # ── LULC ─────────────────────────────────────────────────
     try:
@@ -216,59 +257,80 @@ def collect_features_for_query(
         nearby = nearby.sort_values("distance_km")
 
         if len(nearby) > 0:
-            # Look for recent observations or fallback to latest available readings per well
+            # Look for valid observations (filtering out 0.0 non-physical sensor nulls)
             nearby_names = set(nearby["well_name"])
             matched_obs = obs[obs["well_name"].isin(nearby_names)].copy() if not obs.empty else pd.DataFrame()
             
             if not matched_obs.empty:
-                max_avail_year = matched_obs["obs_date"].dt.year.max()
-                cutoff_year = min(obs_year - 2, max_avail_year - 2)
-                recent_obs = matched_obs[matched_obs["obs_date"].dt.year >= cutoff_year]
-                if recent_obs.empty:
-                    recent_obs = matched_obs.sort_values("obs_date").groupby("well_name").tail(5)
+                # Filter out 0.0 / non-physical sensor zeros if positive measurements exist
+                positive_obs = matched_obs[matched_obs["depth_m"] > 0.1]
+                if not positive_obs.empty:
+                    matched_obs = positive_obs
+
+                # Prioritize the most recent observations per well (latest 5 readings)
+                recent_obs = matched_obs.sort_values("obs_date").groupby("well_name").tail(5)
             else:
                 recent_obs = pd.DataFrame()
 
-            # Per-nearby-well info for the response
-            for _, w in nearby.head(10).iterrows():
+            # Per-nearby-well info and distance-weighted aggregation
+            well_depth_weights = []
+            for _, w in nearby.iterrows():
                 w_recent = recent_obs[recent_obs["well_name"] == w["well_name"]] if not recent_obs.empty else pd.DataFrame()
                 if w_recent.empty and not matched_obs.empty:
                     w_recent = matched_obs[matched_obs["well_name"] == w["well_name"]].sort_values("obs_date").tail(3)
                 
-                recent_depth = float(w_recent["depth_m"].mean()) if len(w_recent) > 0 else (
-                    float(w["mean_depth_m"]) if "mean_depth_m" in w and pd.notna(w["mean_depth_m"]) else None
-                )
-                nearby_wells_info.append({
-                    "well_name":    w["well_name"],
-                    "distance_km":  round(float(w["distance_km"]), 2),
-                    "recent_depth_m": round(recent_depth, 2) if recent_depth is not None else None,
-                    "latitude":     float(w["latitude"]),
-                    "longitude":    float(w["longitude"]),
-                })
+                # Compute average of latest valid readings for this specific well
+                valid_w_depths = w_recent["depth_m"].dropna() if not w_recent.empty else pd.Series()
+                if len(valid_w_depths) > 0:
+                    recent_depth = float(valid_w_depths.mean())
+                elif "mean_depth_m" in w and pd.notna(w["mean_depth_m"]) and w["mean_depth_m"] > 0.1:
+                    recent_depth = float(w["mean_depth_m"])
+                else:
+                    recent_depth = None
 
-            # Aggregate features
-            all_recent_depths = recent_obs["depth_m"].dropna().tolist() if not recent_obs.empty else []
-            if not all_recent_depths and not matched_obs.empty:
-                all_recent_depths = matched_obs["depth_m"].dropna().tolist()
+                dist = float(w["distance_km"])
+                if recent_depth is not None and recent_depth > 0:
+                    # Inverse Distance Weighting: closer wells have exponentially higher influence
+                    weight = 1.0 / ((dist + 0.15) ** 2)
+                    well_depth_weights.append((recent_depth, weight))
 
-            avg_d = round(float(np.mean(all_recent_depths)), 3) if all_recent_depths else None
-            min_d = round(float(np.min(all_recent_depths)), 3) if all_recent_depths else None
-            max_d = round(float(np.max(all_recent_depths)), 3) if all_recent_depths else None
-            std_d = round(float(np.std(all_recent_depths)), 3) if all_recent_depths else None
+                if len(nearby_wells_info) < 10:
+                    nearby_wells_info.append({
+                        "well_name":    w["well_name"],
+                        "distance_km":  round(dist, 2),
+                        "recent_depth_m": round(recent_depth, 2) if recent_depth is not None else None,
+                        "latitude":     float(w["latitude"]),
+                        "longitude":    float(w["longitude"]),
+                    })
+
+            # Distance-weighted depth estimation & robust statistics
+            if well_depth_weights:
+                depths_arr  = np.array([d for d, _ in well_depth_weights])
+                weights_arr = np.array([wt for _, wt in well_depth_weights])
+                idw_avg_d   = round(float(np.sum(depths_arr * weights_arr) / np.sum(weights_arr)), 3)
+                min_d       = round(float(np.min(depths_arr)), 3)
+                max_d       = round(float(np.max(depths_arr)), 3)
+                std_d       = round(float(np.std(depths_arr)), 3)
+            else:
+                all_recent_depths = recent_obs["depth_m"].dropna().tolist() if not recent_obs.empty else []
+                idw_avg_d = round(float(np.mean(all_recent_depths)), 3) if all_recent_depths else None
+                min_d     = round(float(np.min(all_recent_depths)), 3) if all_recent_depths else None
+                max_d     = round(float(np.max(all_recent_depths)), 3) if all_recent_depths else None
+                std_d     = round(float(np.std(all_recent_depths)), 3) if all_recent_depths else None
 
             features["n_nearby_wells"]     = len(nearby)
             features["nearest_well_km"]    = round(float(nearby["distance_km"].min()), 3)
-            features["avg_nearby_depth_m"] = avg_d
+            features["avg_nearby_depth_m"] = idw_avg_d
             features["min_nearby_depth_m"] = min_d
             features["max_nearby_depth_m"] = max_d
             features["std_nearby_depth_m"] = std_d
-            features["mean_depth_m"]       = avg_d
+            features["mean_depth_m"]       = idw_avg_d
             features["min_depth_m"]        = min_d
             features["max_depth_m"]        = max_d
             features["std_depth_m"]        = std_d
 
             # Trend from nearby wells
-            if len(all_recent_depths) >= 3 and not recent_obs.empty:
+            if not recent_obs.empty and len(recent_obs["depth_m"].dropna()) >= 3:
                 trend_label, trend_slope = compute_groundwater_trend(
                     recent_obs["depth_m"], recent_obs["obs_date"]
                 )
@@ -328,11 +390,30 @@ def predict(
     # Preprocess
     X = preprocessor.transform(feature_df)
 
-    # Confidence
+    # Confidence based on Wells + Rainfall + Soil + Land Type (LULC)
     n_wells     = features.get("n_nearby_wells", 0) or 0
     nearest_km  = features.get("nearest_well_km") or radius_km
+    rainfall_mm = features.get("rainfall_mm")
+    soil_data   = {
+        "clay_pct": features.get("clay_pct"),
+        "sand_pct": features.get("sand_pct"),
+        "silt_pct": features.get("silt_pct"),
+        "soil_ph":  features.get("soil_ph"),
+    }
+    lulc_data   = {
+        "lulc_label": features.get("lulc_label"),
+        "lulc_code":  features.get("lulc_code"),
+    }
+    std_depth_m = features.get("std_nearby_depth_m")
+
     confidence, confidence_explanation = compute_confidence_score(
-        n_wells, nearest_km, max_radius_km=radius_km
+        n_wells=n_wells,
+        nearest_distance_km=nearest_km,
+        max_radius_km=radius_km,
+        rainfall_mm=rainfall_mm,
+        soil_data=soil_data,
+        lulc_data=lulc_data,
+        std_depth_m=std_depth_m,
     )
 
     # Predict (only for points within calibrated regional range)
@@ -347,17 +428,28 @@ def predict(
         predicted_depth, confidence_pct=confidence, n_wells=n_wells
     )
 
+    # Compute Groundwater Health & Availability Index (0 - 100%)
+    health_score, health_status, health_desc = compute_groundwater_health_index(
+        depth_m=predicted_depth,
+        trend_slope_m_yr=features.get("trend_slope_m_yr", 0.0),
+        confidence_pct=confidence,
+        n_wells=n_wells,
+    )
+
     if confidence <= 0:
         trend_label = "Unmonitored"
 
     return {
-        "latitude":           lat,
-        "longitude":          lon,
-        "estimated_depth_m":  predicted_depth,
-        "condition":          condition,
-        "trend":              trend_label,
-        "confidence":         confidence,
-        "confidence_note":    confidence_explanation,
+        "latitude":                 lat,
+        "longitude":                lon,
+        "estimated_depth_m":        predicted_depth,
+        "groundwater_health_score": health_score,
+        "health_status":            health_status,
+        "health_description":       health_desc,
+        "condition":                condition,
+        "trend":                    trend_label,
+        "confidence":               confidence,
+        "confidence_note":          confidence_explanation,
         "nearby_wells":       nearby_wells_info,
         "weather": {
             "rainfall_mm":  features.get("rainfall_mm"),

@@ -127,6 +127,9 @@ app.post('/api/v1/groundwater/estimate', async (req: Request, res: Response): Pr
       prediction: {
         estimatedDepthMeters: mlData.estimated_depth_m,
         waterLevelStatus: mlData.condition,
+        groundwaterHealthScore: mlData.groundwater_health_score,
+        healthStatus: mlData.health_status,
+        healthDescription: mlData.health_description,
         historicalTrend: mlData.trend,
         confidenceScore: mlData.confidence / 100.0,
         confidenceExplanation: mlData.confidence_note,

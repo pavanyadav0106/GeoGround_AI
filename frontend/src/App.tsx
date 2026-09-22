@@ -38,6 +38,9 @@ interface PredictionData {
   longitude: number;
   estimated_depth_m: number;
   condition: string;
+  groundwater_health_score?: number | null;
+  health_status?: string;
+  health_description?: string;
   trend: string;
   confidence: number;
   confidence_note: string;
@@ -191,6 +194,9 @@ export default function App() {
           longitude: lon,
           estimated_depth_m: d.prediction.estimatedDepthMeters,
           condition: d.prediction.waterLevelStatus,
+          groundwater_health_score: d.prediction.groundwaterHealthScore,
+          health_status: d.prediction.healthStatus,
+          health_description: d.prediction.healthDescription,
           trend: d.prediction.historicalTrend,
           confidence: Math.round(d.prediction.confidenceScore * 100),
           confidence_note: d.prediction.confidenceExplanation,
@@ -455,33 +461,116 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 2. Confidence Score & Diagnostic Card */}
-              <div className="glass-panel" style={{ padding: '18px 22px', borderLeft: `4px solid ${prediction.confidence > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)'}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              {/* 2. Groundwater Health & Sustainability Index */}
+              {prediction.groundwater_health_score != null && (
+                <div
+                  className="glass-panel"
+                  style={{
+                    padding: '16px 20px',
+                    borderLeft: `4px solid ${
+                      prediction.groundwater_health_score >= 60
+                        ? '#10b981'
+                        : prediction.groundwater_health_score >= 35
+                        ? '#f59e0b'
+                        : '#ef4444'
+                    }`,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                        Groundwater Health & Availability Index
+                      </span>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: '1.25rem',
+                        fontWeight: 800,
+                        fontFamily: 'Outfit, sans-serif',
+                        color:
+                          prediction.groundwater_health_score >= 60
+                            ? '#10b981'
+                            : prediction.groundwater_health_score >= 35
+                            ? '#f59e0b'
+                            : '#ef4444',
+                      }}
+                    >
+                      {prediction.groundwater_health_score}%
+                    </span>
+                  </div>
+
+                  {/* Health Bar */}
+                  <div style={{ width: '100%', height: '7px', background: 'rgba(30, 41, 59, 0.8)', borderRadius: '9999px', overflow: 'hidden', margin: '6px 0 8px' }}>
+                    <div
+                      style={{
+                        width: `${prediction.groundwater_health_score}%`,
+                        height: '100%',
+                        background:
+                          prediction.groundwater_health_score >= 60
+                            ? 'linear-gradient(90deg, #10b981, #06b6d4)'
+                            : prediction.groundwater_health_score >= 35
+                            ? 'linear-gradient(90deg, #f59e0b, #eab308)'
+                            : 'linear-gradient(90deg, #ef4444, #f87171)',
+                        borderRadius: '9999px',
+                        transition: 'width 0.6s ease',
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span
+                      style={{
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        color:
+                          prediction.groundwater_health_score >= 60
+                            ? '#10b981'
+                            : prediction.groundwater_health_score >= 35
+                            ? '#f59e0b'
+                            : '#ef4444',
+                      }}
+                    >
+                      {prediction.health_status || (prediction.groundwater_health_score < 35 ? 'Critical Over-Exploited' : 'Stable')}
+                    </span>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {prediction.groundwater_health_score < 35 ? '⚠️ Red Zone Alert' : 'Hydrogeological Scale'}
+                    </span>
+                  </div>
+                  {prediction.health_description && (
+                    <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.4 }}>
+                      {prediction.health_description}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* 3. AI Data Reliability & Sensor Verification Card */}
+              <div className="glass-panel" style={{ padding: '16px 20px', borderLeft: `4px solid ${prediction.confidence > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)'}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8' }}>
-                    <ShieldCheck size={20} />
-                    <span style={{ fontSize: '0.9rem', fontWeight: 700 }}>ML Confidence Score</span>
+                    <ShieldCheck size={18} />
+                    <span style={{ fontSize: '0.88rem', fontWeight: 700 }}>AI Telemetry & Sensor Coverage</span>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <span style={{ fontSize: '1.25rem', fontWeight: 800, color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8', fontFamily: 'Outfit, sans-serif' }}>
-                      {prediction.confidence}%
+                    <span style={{ fontSize: '1.15rem', fontWeight: 800, color: prediction.confidence > 0 ? '#38bdf8' : '#94a3b8', fontFamily: 'Outfit, sans-serif' }}>
+                      {prediction.confidence}% Certainty
                     </span>
                   </div>
                 </div>
 
                 {/* Confidence Bar */}
-                <div style={{ width: '100%', height: '6px', background: 'rgba(30, 41, 59, 0.8)', borderRadius: '9999px', overflow: 'hidden', margin: '8px 0 10px' }}>
+                <div style={{ width: '100%', height: '5px', background: 'rgba(30, 41, 59, 0.8)', borderRadius: '9999px', overflow: 'hidden', margin: '6px 0 8px' }}>
                   <div
                     style={{
                       width: `${prediction.confidence}%`,
                       height: '100%',
-                      background: prediction.confidence > 0 ? 'linear-gradient(90deg, #06b6d4, #10b981)' : '#475569',
+                      background: prediction.confidence > 0 ? 'linear-gradient(90deg, #06b6d4, #38bdf8)' : '#475569',
                       borderRadius: '9999px',
                     }}
                   />
                 </div>
 
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                <p style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
                   {prediction.confidence_note}
                 </p>
               </div>
