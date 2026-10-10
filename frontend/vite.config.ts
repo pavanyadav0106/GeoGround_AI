@@ -8,4 +8,7 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
   },
+  build: {
+    emptyOutDir: false,
+  },
 });

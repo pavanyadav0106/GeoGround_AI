@@ -38,10 +38,7 @@ services:
       - key: PORT
         value: 3001
       - key: ML_SERVICE_URL
-        fromService:
-          type: web
-          name: geoground-ml-service
-          property: host
+        value: "https://geoground-ml-service.onrender.com"
 
   # ─── 3. React Frontend Dashboard ────────────────────────────────────────────
   - type: web
@@ -57,4 +54,6 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_BASE
-        sync: false
+        value: "https://geoground-backend.onrender.com/api/v1"
+      - key: VITE_ML_DIRECT_BASE
+        value: "https://geoground-ml-service.onrender.com"

@@ -10,7 +10,38 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+
+function getMlServiceUrl(): string {
+  let url = (process.env.ML_SERVICE_URL || '').trim();
+  if (!url) {
+    return 'https://geoground-ml-service.onrender.com';
+  }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    if (url.includes('.onrender.com')) {
+      url = `https://${url}`;
+    } else {
+      url = `http://${url}`;
+    }
+  }
+  return url.replace(/\/+$/, '');
+}
+
+const ML_SERVICE_URL = getMlServiceUrl();
+
+async function callMlPredict(payload: any) {
+  try {
+    return await axios.post(`${ML_SERVICE_URL}/predict`, payload, { timeout: 15000 });
+  } catch (err: any) {
+    if (!ML_SERVICE_URL.includes('geoground-ml-service.onrender.com')) {
+      try {
+        return await axios.post(`https://geoground-ml-service.onrender.com/predict`, payload, { timeout: 15000 });
+      } catch (fallbackErr) {
+        // Continue to throw primary error
+      }
+    }
+    throw new Error(`ML Service error: ${err.response?.data?.detail || err.message}`);
+  }
+}
 
 app.use(cors());
 app.use(express.json());
@@ -101,13 +132,11 @@ app.post('/api/v1/groundwater/estimate', async (req: Request, res: Response): Pr
     // 1. Concurrent reverse geocoding and ML prediction
     const [geoInfo, mlResponse] = await Promise.all([
       reverseGeocode(lat, lon),
-      axios.post(`${ML_SERVICE_URL}/predict`, {
+      callMlPredict({
         latitude: lat,
         longitude: lon,
         radius_km: parseFloat(radiusKm),
         query_date: queryDate || undefined,
-      }, { timeout: 15000 }).catch(err => {
-        throw new Error(`ML Service error: ${err.response?.data?.detail || err.message}`);
       }),
     ]);
 

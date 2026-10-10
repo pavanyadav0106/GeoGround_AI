@@ -29,8 +29,19 @@ import {
   Moon,
 } from 'lucide-react';
 
-const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_BASE || 'http://localhost:3001/api/v1';
-const ML_DIRECT_BASE = (import.meta as any).env?.VITE_ML_DIRECT_BASE || (import.meta as any).env?.VITE_ML_SERVICE_URL || 'http://localhost:8000';
+const isProdHost = typeof window !== 'undefined' && (
+  window.location.hostname.includes('onrender.com') ||
+  window.location.hostname.includes('vercel.app') ||
+  window.location.hostname.includes('netlify.app') ||
+  window.location.protocol === 'https:'
+);
+
+const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_BASE || (
+  isProdHost ? 'https://geoground-backend.onrender.com/api/v1' : 'http://localhost:3001/api/v1'
+);
+const ML_DIRECT_BASE = (import.meta as any).env?.VITE_ML_DIRECT_BASE || (import.meta as any).env?.VITE_ML_SERVICE_URL || (
+  isProdHost ? 'https://geoground-ml-service.onrender.com' : 'http://localhost:8000'
+);
 
 type Lang = 'en' | 'te';
 
