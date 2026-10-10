@@ -14,6 +14,7 @@ Usage (standalone):
 
 import json
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Optional
@@ -290,8 +291,9 @@ def collect_features_for_query(
 
                 dist = float(w["distance_km"])
                 if recent_depth is not None and recent_depth > 0:
-                    # Inverse Distance Weighting: closer wells have exponentially higher influence
-                    weight = 1.0 / ((dist + 0.15) ** 2)
+                    # Spatial proximity weighting with exponential decay:
+                    # Immediate nearest wells (< 4-5km) hold primary influence, preventing distant rural/lake wells from distorting localized extraction
+                    weight = math.exp(-dist / 2.8) / ((dist + 0.1) ** 1.8)
                     well_depth_weights.append((recent_depth, weight))
 
                 if len(nearby_wells_info) < 10:
@@ -307,7 +309,15 @@ def collect_features_for_query(
             if well_depth_weights:
                 depths_arr  = np.array([d for d, _ in well_depth_weights])
                 weights_arr = np.array([wt for _, wt in well_depth_weights])
-                idw_avg_d   = round(float(np.sum(depths_arr * weights_arr) / np.sum(weights_arr)), 3)
+                weights_arr = weights_arr / np.sum(weights_arr)
+                idw_avg_d   = float(np.sum(depths_arr * weights_arr))
+
+                # Urban built-up zone groundwater drawdown correction:
+                # Built-up areas with heavy multi-story extraction and paved impermeable surface have lower recharge and deeper stress
+                if features.get("lulc_is_built_up") == 1 and idw_avg_d > 5.0:
+                    idw_avg_d = idw_avg_d * 1.15
+
+                idw_avg_d   = round(idw_avg_d, 3)
                 min_d       = round(float(np.min(depths_arr)), 3)
                 max_d       = round(float(np.max(depths_arr)), 3)
                 std_d       = round(float(np.std(depths_arr)), 3)
@@ -418,7 +428,17 @@ def predict(
 
     # Predict (only for points within calibrated regional range)
     if confidence > 0 and n_wells > 0:
-        predicted_depth = float(model.predict(X)[0])
+        ml_pred = float(model.predict(X)[0])
+        # Anchor with high local observation weighting when close monitoring wells exist
+        avg_d = features.get("avg_nearby_depth_m")
+        if avg_d is not None and nearest_km <= 5.0:
+            # Proximity-weighted blend: closer nearest well gives higher weight to localized observations
+            obs_weight = max(0.40, 1.0 - (nearest_km / 8.0))
+            predicted_depth = (obs_weight * avg_d) + ((1.0 - obs_weight) * ml_pred)
+        elif avg_d is not None:
+            predicted_depth = 0.40 * avg_d + 0.60 * ml_pred
+        else:
+            predicted_depth = ml_pred
         predicted_depth = max(0.0, round(predicted_depth, 2))
     else:
         predicted_depth = None

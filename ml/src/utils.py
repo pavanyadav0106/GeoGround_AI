@@ -167,8 +167,8 @@ def compute_groundwater_health_index(
     if n_wells == 0 or confidence_pct <= 0 or depth_m is None or pd.isna(depth_m):
         return None, "Unmonitored", "Location is outside calibrated monitoring coverage."
 
-    # Base score: maps 0m -> 100%, 35m+ -> 0%
-    base_score = max(0.0, 100.0 - (depth_m / 35.0 * 100.0))
+    # Base score: maps 0m -> 100%, 30m+ -> 0%
+    base_score = max(0.0, 100.0 - (depth_m / 30.0 * 100.0))
 
     # Trend adjustment: falling water table reduces health index; rising improves it
     if trend_slope_m_yr > 0.3:
@@ -211,13 +211,13 @@ def classify_groundwater_condition(
         return "Uncertain (No Data)"
     if pd.isna(depth_m) or depth_m < 0:
         return "Unknown"
-    if depth_m <= 8:
+    if depth_m <= 5.0:
         return "Excellent"
-    if depth_m <= 15:
+    if depth_m <= 10.0:
         return "Good"
-    if depth_m <= 22:
+    if depth_m <= 20.0:
         return "Moderate"
-    if depth_m <= 30:
+    if depth_m <= 30.0:
         return "Critical"
     return "Severe Depletion"
 
